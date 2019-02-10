@@ -9,6 +9,7 @@ import logging
 import os
 import os.path
 import sys
+from datetime import date
 
 from cognite import CogniteClient
 from cognite.client.experimental.sequences import Column, Row, RowValue, Sequence
@@ -69,13 +70,22 @@ def update_cdp_timeseries(client, name, metadata, asset_name=None, asset_id=None
         vargs["description"] = metadata["NI_CM_Reason"]
     if asset_name:
         metadata["assetName"] = asset_name
+    metadata.update({k: str(v) for k, v in metadata.items() if isinstance(v, date)})
     client.time_series.post_time_series([TimeSeries(name=name, metadata=metadata, **vargs)])
 
 
-def process_static_data(client, metadata):
+def process_static_data(client, metadata, path):
+    """TDMS can hold a single value for a static group, we send it as datapoints to CDP."""
+    timestamp = int(metadata["DateTime"].timestamp() * 1000)
+    try:
+        value = float(metadata["Value"])
+    except ValueError as exc:
+        logger.warning("{} Failed to convert float {} {}".format(path, metadata["Value"], exc))
+        return
+
     asset_name = metadata.get("NI_CM_AssetName")
     if not asset_name:
-        logger.error("Tried to create timeseries for static value without asset name")
+        logger.error("{} Tried to create timeseries for static value without asset name".format(path))
         return
 
     name = asset_name
@@ -87,12 +97,6 @@ def process_static_data(client, metadata):
         asset_id = find_cdp_asset_id(client, metadata)
         update_cdp_timeseries(client, name, metadata, asset_name, asset_id)
 
-    timestamp = metadata["DateTime"].timestamp()
-    try:
-        value = float(metadata["Value"])
-    except ValueError as exc:
-        logger.warning("Failed to convert float {} {}".format(metadata["Value"], exc))
-        return
     client.datapoints.post_datapoints(name, [Datapoint(timestamp=timestamp, value=value)])
 
 
@@ -100,24 +104,26 @@ def create_sequence(client, channel, metadata):
     """Create the CDP sequence, with columns and metadata etc."""
     name = "{}-{}".format(metadata["NI_CM_AssetName"], metadata["name"]).replace(" ", "_")
     asset_id = find_cdp_asset_id(client, metadata)
-    time_type = channel.time_track(True, "ns").dtype
-    data_type = channel.data.dtype
+    time_type = str(channel.time_track(True, "ns").dtype)
+    data_type = str(channel.data.dtype)
+    metadata.update({k: str(v) for k, v in metadata.items() if isinstance(v, date)})
 
     columns = [Column(name="time", value_type=time_type), Column(name="value", value_type=data_type)]
     return Sequence(name=name, asset_id=asset_id, columns=columns, description=channel.path, metadata=metadata)
 
 
-def create_seq_rows(channel):
+def create_seq_rows(channel, columns):
     """Create the rows, each has timestamp and a value."""
     rows = []
-    iterator = channel.as_dataframe().iterrows()
+    iterator = channel.as_dataframe(True).iterrows()
     next(iterator)  # Skip header
     for i, row in enumerate(iterator):
-        rows.append(Row(i, [RowValue(0, row[0]), RowValue(1, row[1].values[0])]))
+        rows.append(Row(i, [RowValue(columns[0].id, str(row[0])), RowValue(columns[1].id, float(row[1].values[0]))]))
     return rows
 
 
-def process_tdms_file(client, tdms):
+def process_tdms_file(client, tdms, path):
+    """Handle all groups of sequence data and static data, and post to CDP."""
     properties = tdms.object().properties
     channels = [c for group in tdms.groups() for c in tdms.group_channels(group)]
 
@@ -129,20 +135,20 @@ def process_tdms_file(client, tdms):
 
         if not channel.has_data or not channel.data.any():
             if channel.property("Value") and metadata.get("DateTime"):  # Static value channels
-                process_static_data(client, metadata)
+                process_static_data(client, metadata, path)
             else:
-                logger.warning("{} channel has no data {}".format(channel.path, metadata))
+                logger.warning("{}: {} channel has no data {}".format(path, channel.path, metadata))
             continue
 
         sequence = create_sequence(client, channel, metadata)
-        rows = create_seq_rows(channel)
 
-        res = client.experimental.post_sequences([sequence])
+        res = client.experimental.sequences.post_sequences([sequence])
         if res:
-            client.experimental.post_data_to_sequence(res.id, rows)
+            rows = create_seq_rows(channel, res.columns)
+            client.experimental.sequences.post_data_to_sequence(res.id, rows)
             logger.info("Sent {} rows to sequence {}".format(len(rows), res.name))
         else:
-            logger.error("Failed to create sequence {}".format(sequence.name))
+            logger.error("{} Failed to create sequence {}".format(path, sequence.name))
 
 
 def main(args):
@@ -163,10 +169,10 @@ def main(args):
             try:
                 tdms = TdmsFile(fp)
             except Exception as exc:
-                logger.error("Fatal: failed to parse TDMS file: {}".format(exc))
+                logger.error("Fatal: failed to parse TDMS file {}: {}".format(path, exc))
                 continue
             else:
-                process_tdms_file(client, tdms)
+                process_tdms_file(client, tdms, path)
 
 
 if __name__ == "__main__":
