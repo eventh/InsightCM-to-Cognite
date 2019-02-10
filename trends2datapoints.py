@@ -105,7 +105,7 @@ def process_datapoints_excel_file(path):
         try:
             value = float(value_str)
         except ValueError as exc:
-            logger.warn("Failed to convert float {} {}".format(value_str, exc))
+            logger.warning("Failed to convert float {} {}".format(value_str, exc))
             continue
         timestamp = panda_ts.value // 10 ** 6  # From nano to microseconds
         points.append((timestamp, value))
@@ -124,7 +124,7 @@ def find_cdp_asset(client, asset_uid, asset_name):
         logger.debug("Asset {} has id {} in CDP".format(asset_name, id_))
         return id_
     else:
-        logger.warn("Asset {} not found in CDP".format(asset_name))
+        logger.warning("Asset {} not found in CDP".format(asset_name))
 
 
 def find_cdp_timeseries(client, name):
@@ -150,12 +150,10 @@ def update_cdp_timeseries(client, name, metadata, asset_name=None, asset_id=None
         vargs["description"] = metadata["Type"]
     if asset_name:
         metadata["assetName"] = asset_name
-
-    series = TimeSeries(name=name, metadata=metadata, **vargs)
-    client.time_series.post_time_series([series])
+    client.time_series.post_time_series([TimeSeries(name=name, metadata=metadata, **vargs)])
 
 
-def insert_cdp_datapoints(client, name, datapoints, limit=1000):
+def insert_cdp_datapoints(client, name, datapoints, limit=10000):
     """Store datapoints in CDP, 'limit' amount in each call."""
     if len(datapoints) > limit:
         insert_cdp_datapoints(client, name, datapoints[limit:])
@@ -196,9 +194,8 @@ def process_inputs(input_path, save_files=False):
 
 def process_datapoints(client, timeseries, datapoints, path):
     """Send datapoints to CDP, but create timeseries metadata first if needed."""
-    cdp_asset_id = find_cdp_asset(client, timeseries.assetId, timeseries.assetName)
-
     if not find_cdp_timeseries(client, timeseries.name):
+        cdp_asset_id = find_cdp_asset(client, timeseries.assetId, timeseries.assetName)
         update_cdp_timeseries(client, timeseries.name, timeseries.metadata, timeseries.assetName, cdp_asset_id)
 
     insert_cdp_datapoints(client, timeseries.name, datapoints)

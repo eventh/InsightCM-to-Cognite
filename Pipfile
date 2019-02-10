@@ -10,6 +10,7 @@ iSort = "*"
 cognite-sdk = "*"
 pandas = "*"
 xlrd = "*"
+nptdms = "*"
 
 [requires]
 python_version = "3.7"
