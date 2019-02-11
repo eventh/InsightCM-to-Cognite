@@ -32,7 +32,7 @@ from cognite.client.stable.time_series import TimeSeries
 
 
 TimeData = namedtuple("TimeData", ["name", "trendId", "assetId", "assetName", "metadata"])
-logger = logging.getLogger(__name__)
+logger = logging.getLogger()
 
 
 def parse_cli_args():
@@ -84,11 +84,9 @@ def process_timeseries_metadata(path_to_assets, path_to_metadata):
             return
         properties.update(trends[0])
 
-    name = asset_name  # Timeseries name in CDP
+    name = asset_name  # name would be the Timeseries name in CDP
     if properties.get("Name"):
         name += " {}".format(properties["Name"])
-    if properties.get("Unit"):
-        name += " ({})".format(properties["Unit"])
     name = name.replace(" ", "_")
 
     return TimeData(name, trend_id, asset_id, asset_name, properties)

@@ -18,7 +18,7 @@ from cognite.client.stable.time_series import TimeSeries
 
 from nptdms import TdmsFile
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger()
 
 
 def parse_cli_args():
@@ -26,6 +26,14 @@ def parse_cli_args():
     parser = argparse.ArgumentParser(description="Tool for extracting sequences from NI TDMS files to CDP")
     parser.add_argument("--path", "-p", type=str, required=True, help="Required, path to folder or TDMS file")
     parser.add_argument("--apikey", "-k", type=str, required=False, help="Optional, CDP API KEY")
+    parser.add_argument(
+        "--only-static",
+        "-s",
+        required=False,
+        default=False,
+        action="store_true",
+        help="Optional, only process static values, not waveforms",
+    )
     return parser.parse_args()
 
 
@@ -88,10 +96,7 @@ def process_static_data(client, metadata, path):
         logger.error("{} Tried to create timeseries for static value without asset name".format(path))
         return
 
-    name = asset_name
-    if metadata.get("unit_string"):
-        name += " ({})".format(metadata["unit_string"])
-    name = name.replace(" ", "_")
+    name = asset_name.replace(" ", "_")
 
     if not find_cdp_timeseries(client, name):
         asset_id = find_cdp_asset_id(client, metadata)
@@ -122,7 +127,7 @@ def create_seq_rows(channel, columns):
     return rows
 
 
-def process_tdms_file(client, tdms, path):
+def process_tdms_file(client, tdms, path, only_static=False):
     """Handle all groups of sequence data and static data, and post to CDP."""
     properties = tdms.object().properties
     channels = [c for group in tdms.groups() for c in tdms.group_channels(group)]
@@ -138,6 +143,9 @@ def process_tdms_file(client, tdms, path):
                 process_static_data(client, metadata, path)
             else:
                 logger.warning("{}: {} channel has no data {}".format(path, channel.path, metadata))
+            continue
+
+        if only_static:
             continue
 
         sequence = create_sequence(client, channel, metadata)
@@ -172,7 +180,7 @@ def main(args):
                 logger.error("Fatal: failed to parse TDMS file {}: {}".format(path, exc))
                 continue
             else:
-                process_tdms_file(client, tdms, path)
+                process_tdms_file(client, tdms, path, args.only_static)
 
 
 if __name__ == "__main__":
